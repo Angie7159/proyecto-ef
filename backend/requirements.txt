@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+faster-whisper
+httpx
+truststore>=0.10.0
+openpyxl
+python-docx
+supabase
+python-dotenv
+python-multipart
+pydantic
+pydantic-settings
+rapidfuzz

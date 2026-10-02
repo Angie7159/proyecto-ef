@@ -1,0 +1,32 @@
+{
+  "resumen_ejecutivo": "Johnny León enfatiza la importancia de dedicar los 15 minutos previos y posteriores al programa juvenil para conectar personalmente con los jóvenes. Señala que muchos ministerios se enfocan demasiado en la logística del programa y descuidan la relación directa con los adolescentes. Propone estrategias concretas, como estar en áreas de alto tráfico, evitar conversaciones entre líderes, usar preguntas que fomenten la reflexión y buscar a los jóvenes solitarios. Concluye invitando a implementar esta regla para mejorar el impacto del ministerio juvenil.",
+  "problemas_identificados": [
+    {
+      "titulo": "Enfoque excesivo en el programa",
+      "descripcion": "Los líderes dedican demasiado tiempo a afinar detalles del programa, permitiendo que el programa dirija la reunión en lugar de enfocarse en los jóvenes.",
+      "categoria": "Gestión"
+    },
+    {
+      "titulo": "Distracción de los líderes entre sí",
+      "descripcion": "Los líderes aprovechan los 15 minutos previos para conversar entre ellos, lo que reduce el tiempo dedicado a los jóvenes.",
+      "categoria": "Gestión"
+    },
+    {
+      "titulo": "Jóvenes aislados",
+      "descripcion": "Algunos adolescentes permanecen solos o introvertidos durante el encuentro, sin recibir la atención necesaria de los líderes.",
+      "categoria": "Estudiantes"
+    }
+  ],
+  "acuerdos_alcanzados": [],
+  "puntos_clave": [
+    "Aplicar la regla de los 15 minutos antes y después del programa para relacionarse con los jóvenes.",
+    "Posicionarse en áreas de alto tráfico (lobby, entrada) durante esos minutos.",
+    "Evitar conversaciones entre líderes y enfocarse exclusivamente en los jóvenes.",
+    "Utilizar preguntas abiertas que fomenten respuestas elaboradas y mantengan contacto visual.",
+    "Buscar y acompañar a los jóvenes que están solos o son introvertidos."
+  ],
+  "participantes_mencionados": [
+    "Johnny León",
+    "Marta"
+  ]
+}

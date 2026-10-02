@@ -1,0 +1,24 @@
+# Dependencias de Python
+.venv/
+__pycache__/
+*.pyc
+
+# Dependencias de Node (frontend)
+node_modules/
+dist/
+build/
+
+# Variables de entorno (¡NUNCA SUBIR ESTO A GIT!)
+.env
+.env.local
+.env.example
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Configuración de VS Code
+.vscode/
+
+# Archivos de logs
+*.log
