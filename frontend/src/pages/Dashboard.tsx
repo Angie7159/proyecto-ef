@@ -37,9 +37,9 @@ type MonthlyCount = { month: string; reuniones: number }
 type CommitteeStat = { id: string; nombre: string; color: string; reuniones: number; duracion: number }
 
 const agreementStates: { key: EstadoAcuerdo; label: string; color: string }[] = [
-  { key: 'pendiente', label: 'Pendiente', color: '#EAB308' },
+  { key: 'pendiente', label: 'Pendiente', color: '#F59E0B' },
   { key: 'en_proceso', label: 'En Proceso', color: '#3B82F6' },
-  { key: 'cumplido', label: 'Cumplido', color: '#22C55E' },
+  { key: 'cumplido', label: 'Cumplido', color: '#10B981' },
   { key: 'vencido', label: 'Vencido', color: '#EF4444' },
 ]
 

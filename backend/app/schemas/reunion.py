@@ -9,7 +9,7 @@ EstadoReunion = Literal[
     "procesada",
     "error",
 ]
-FuenteReunion = Literal["teams_auto", "teams_manual", "bot_auto", "zoom", "presencial", "upload"]
+FuenteReunion = Literal["teams_auto", "teams_manual", "bot_auto", "zoom", "presencial", "upload", "otro"]
 
 
 class ReunionBase(BaseModel):
@@ -45,6 +45,9 @@ class ReunionResponse(ReunionBase):
     resumen_ejecutivo: str | None = None
     problemas_identificados: list[Any] = Field(default_factory=list)
     puntos_clave: list[str] = Field(default_factory=list)
+    puntaje_informe: int | None = None
+    participacion_score: int | None = None
+    sentimiento_score: int | None = None
     archivo_excel_url: str | None = None
     archivo_word_resumen_url: str | None = None
     archivo_word_smartart_url: str | None = None
@@ -79,3 +82,7 @@ class ReunionListItem(BaseModel):
 
 class AsignarComiteRequest(BaseModel):
     comite_id: str = Field(min_length=1)
+
+
+class ActualizarTituloRequest(BaseModel):
+    titulo_final: str = Field(min_length=1, max_length=300)

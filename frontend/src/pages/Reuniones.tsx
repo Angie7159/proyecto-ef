@@ -5,6 +5,7 @@ import {
   Calendar,
   CheckCircle,
   Clock,
+  CircleHelp,
   Download,
   MoreHorizontal,
   Search,
@@ -43,6 +44,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -89,6 +91,15 @@ function formatMeetingTime(value: string | null) {
   if (!value) return null
   const parsed = parse(value, value.length > 5 ? 'HH:mm:ss' : 'HH:mm', new Date())
   return Number.isNaN(parsed.getTime()) ? value.slice(0, 5) : format(parsed, 'H:mm')
+}
+
+function meetingProgressLabel(progress: string | null | undefined) {
+  const value = (progress ?? '').toLocaleLowerCase()
+  if (value.includes('transcrib')) return 'Transcribiendo...'
+  if (value.includes('analiz')) return 'Analizando...'
+  if (value.includes('document') || value.includes('generando')) return 'Generando documentos...'
+  if (value.includes('bot_enviado')) return 'Preparando reunión...'
+  return progress?.trim() || 'Procesando...'
 }
 
 function MeetingSourceIcon({ source }: { source: ReunionListItem['fuente'] }) {
@@ -167,7 +178,8 @@ function Reuniones() {
 
       const search = filters.search.trim()
       if (search) query = query.ilike('titulo', `%${search}%`)
-      if (filters.comiteId !== 'todos') query = query.eq('comite_id', filters.comiteId)
+      if (filters.comiteId === 'sin_comite') query = query.is('comite_id', null)
+      else if (filters.comiteId !== 'todos') query = query.eq('comite_id', filters.comiteId)
       if (filters.estado !== 'todos') query = query.eq('estado', filters.estado)
       const bounds = dateRangeBounds(filters.rango, now)
       if (bounds) {
@@ -180,7 +192,7 @@ function Reuniones() {
       if (error) throw error
       return (data ?? []) as ReunionListItem[]
     },
-    refetchInterval: (query) => query.state.data?.some((meeting) => meeting.estado === 'en_proceso') ? 5000 : false,
+    refetchInterval: (query) => query.state.data?.some((meeting) => meeting.estado === 'en_proceso') ? 10_000 : false,
   })
 
   const meetingIds = meetings.map((meeting) => meeting.id)
@@ -248,7 +260,6 @@ function Reuniones() {
     const date = parseMeetingDate(meeting.fecha)
     const start = formatMeetingTime(meeting.hora_inicio)
     const finish = formatMeetingTime(meeting.hora_fin)
-    const dateLabel = format(date, 'EEE, d MMM', { locale: es }).replace('.', '')
 
     return (
       <Card
@@ -263,7 +274,7 @@ function Reuniones() {
             navigate(`/reuniones/${meeting.id}`)
           }
         }}
-        className="group cursor-pointer border-slate-200 shadow-sm transition hover:border-slate-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="group cursor-pointer border-slate-200 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <CardContent className="flex flex-col gap-4 p-4 md:flex-row md:items-center">
           <div className="flex min-w-0 flex-1 items-start gap-3">
@@ -272,6 +283,13 @@ function Reuniones() {
             </div>
             <div className="min-w-0 flex-1">
               <p className="truncate font-medium text-slate-900">{meeting.titulo}</p>
+              <div className="mt-1">
+                {meeting.comite_nombre ? (
+                  <Badge className="max-w-full truncate border-transparent text-white" style={{ backgroundColor: meeting.comite_color ?? '#64748B' }}>{meeting.comite_nombre}</Badge>
+                ) : (
+                  <Badge variant="outline" className="border-slate-200 bg-slate-100 text-slate-600">Sin comité</Badge>
+                )}
+              </div>
               <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
                 <Users aria-hidden="true" className="h-3.5 w-3.5" />
                 {meeting.participantes ?? 0} participantes
@@ -281,22 +299,15 @@ function Reuniones() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 md:ml-auto md:justify-end">
-            {meeting.comite_nombre && (
-              <Badge
-                className="max-w-40 truncate border-transparent text-white hover:opacity-90"
-                style={{ backgroundColor: meeting.comite_color ?? '#64748b' }}
-              >
-                {meeting.comite_nombre}
-              </Badge>
-            )}
-            <span className="min-w-32 text-xs text-slate-500">
-              {dateLabel}{start ? ` · ${start}${finish ? ` - ${finish}` : ''}` : ''}
-            </span>
-            <Badge variant="outline" className={statusStyles[meeting.estado]}>
+          <div className="grid grid-cols-1 items-center gap-3 pl-12 sm:ml-auto sm:grid-cols-[180px_140px_40px] sm:gap-4 sm:pl-0">
+            <div className="flex flex-col items-center gap-0.5 text-center">
+              <span className="text-sm font-medium capitalize text-slate-700">{format(date, date.getFullYear() === now.getFullYear() ? 'EEE d MMM' : 'EEE d MMM yyyy', { locale: es }).replaceAll('.', '')}</span>
+              <span className="text-xs text-slate-400">{start ? `${start}${finish ? ` - ${finish}` : ''}` : 'Hora no registrada'}</span>
+            </div>
+            <Badge variant="outline" className={`justify-self-start sm:justify-self-center ${statusStyles[meeting.estado]}`}>
               {meeting.estado === 'en_proceso' ? (
                 <span className="inline-flex items-center gap-1.5 animate-pulse">
-                  <span className="h-1.5 w-1.5 rounded-full bg-current" /> Procesando...
+                  <span className="h-1.5 w-1.5 rounded-full bg-current" /> En proceso: {meetingProgressLabel(meeting.progreso)}
                 </span>
               ) : statusLabels[meeting.estado]}
             </Badge>
@@ -381,6 +392,7 @@ function Reuniones() {
             <SelectTrigger aria-label="Filtrar por comité"><SelectValue placeholder="Comités" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="todos">Todos los comités</SelectItem>
+              <SelectItem value="sin_comite">Sin comité</SelectItem>
               {committees.map((committee) => <SelectItem key={committee.id} value={committee.id}>{committee.nombre}</SelectItem>)}
             </SelectContent>
           </Select>
@@ -428,13 +440,18 @@ function Reuniones() {
           </CardContent>
         </Card>
       ) : (
-        <div className="space-y-6">
+        <div className="space-y-3">
+          <div className="hidden grid-cols-[minmax(0,1fr)_180px_140px_40px] items-center gap-4 px-4 text-xs font-semibold uppercase tracking-wide text-slate-500 sm:grid">
+            <span>Informe</span><span className="text-center">Fecha y hora</span><span className="flex items-center justify-center gap-1">Estado<TooltipProvider><Tooltip><TooltipTrigger asChild><button type="button" aria-label="Ayuda sobre estados" className="text-slate-400 hover:text-slate-700"><CircleHelp className="h-3.5 w-3.5" /></button></TooltipTrigger><TooltipContent className="max-w-xs"><p>Estados de una reunión:</p><p>• Pendiente: Recién subida, falta procesar</p><p>• En proceso: Transcribiendo o analizando con IA</p><p>• Procesada: Lista con resumen, acuerdos y documentos</p><p>• Error: Hubo un problema, revisa el detalle</p></TooltipContent></Tooltip></TooltipProvider></span><span aria-label="Acciones"><MoreHorizontal className="ml-auto h-4 w-4" /></span>
+          </div>
+          <div className="space-y-6">
           {(Object.entries(groupedMeetings) as [keyof typeof groupedMeetings, ReunionListItem[]][]).map(([group, entries]) => entries.length > 0 && (
             <section key={group} aria-label={group}>
               <h2 className="mb-3 text-xs font-semibold tracking-wide text-slate-500">{group}</h2>
               <div className="space-y-2">{entries.map(renderMeeting)}</div>
             </section>
           ))}
+          </div>
         </div>
       )}
     </div>

@@ -3,23 +3,21 @@ import { useQuery } from '@tanstack/react-query'
 import { format } from 'date-fns'
 import { useNavigate, Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { Bot, FileAudio, FileVideo, Link as LinkIcon, LoaderCircle, UploadCloud, X } from 'lucide-react'
+import { FileAudio, FileVideo, LoaderCircle, UploadCloud, X } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { supabase } from '@/lib/supabase'
 import { getApiErrorMessage, procesarReunionCompleta } from '@/lib/api'
-import { agregarReunionPorLink, obtenerEstadoCuentaMicrosoft } from '@/lib/bot'
 import type { Comite, FuenteReunion } from '@/types'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const ACCEPTED_EXTENSIONS = ['mp3', 'mp4', 'm4a', 'wav', 'mov', 'webm']
 const ACCEPTED_FILES = '.mp3,.mp4,.m4a,.wav,.mov,.webm'
 
-type FormErrors = Partial<Record<'file' | 'title' | 'date' | 'time' | 'committee' | 'submit', string>>
+type FormErrors = Partial<Record<'file' | 'title' | 'date' | 'time' | 'submit', string>>
 
 function localToday() {
   return format(new Date(), 'yyyy-MM-dd')
@@ -42,13 +40,7 @@ function Upload() {
   const [source, setSource] = useState<FuenteReunion>('upload')
   const [errors, setErrors] = useState<FormErrors>({})
   const [isUploading, setIsUploading] = useState(false)
-  const [processingStage, setProcessingStage] = useState('')
   const [isDragging, setIsDragging] = useState(false)
-  const [meetingUrl, setMeetingUrl] = useState('')
-  const [botTitle, setBotTitle] = useState('')
-  const [botCommitteeId, setBotCommitteeId] = useState('none')
-  const [botDuration, setBotDuration] = useState(30)
-  const [isSendingBot, setIsSendingBot] = useState(false)
 
   const { data: committees = [], isLoading: committeesLoading, isError: committeesError } = useQuery({
     queryKey: ['comites', 'upload'],
@@ -58,12 +50,6 @@ function Upload() {
       return (data ?? []) as Pick<Comite, 'id' | 'nombre'>[]
     },
   })
-  const microsoftAccountQuery = useQuery({
-    queryKey: ['cuenta-microsoft'],
-    queryFn: obtenerEstadoCuentaMicrosoft,
-    retry: 1,
-  })
-  const microsoftConnected = microsoftAccountQuery.data?.conectada === true
 
   function validateFile(candidate: File | null) {
     if (!candidate) return 'Selecciona un archivo de audio o video.'
@@ -100,7 +86,6 @@ function Upload() {
     if (startTime && endTime && endTime <= startTime) {
       nextErrors.time = 'La hora de fin debe ser posterior a la hora de inicio.'
     }
-    if (!committeeId) nextErrors.committee = 'Selecciona un comité.'
     setErrors(nextErrors)
     return Object.keys(nextErrors).length === 0
   }
@@ -110,7 +95,6 @@ function Upload() {
     if (!validateForm() || !file) return
 
     setIsUploading(true)
-    setProcessingStage('Subiendo audio...')
     setErrors({})
     const extension = file.name.split('.').pop()!.toLowerCase()
     const objectPath = `${date}/${crypto.randomUUID()}.${extension}`
@@ -138,10 +122,10 @@ function Upload() {
         duracion_min: startTime && endTime
           ? Math.round((new Date(`1970-01-01T${endTime}:00`).getTime() - new Date(`1970-01-01T${startTime}:00`).getTime()) / 60000)
           : null,
-        comite_id: committeeId,
+        comite_id: committeeId && committeeId !== 'sin_comite' ? committeeId : null,
         fuente: source,
-        estado: 'en_proceso',
-        progreso: 'Transcribiendo con IA...',
+        estado: 'pendiente_asignacion',
+        progreso: 'pendiente',
         audio_url: publicData.publicUrl,
       }).select('id').single()
       if (insertError) {
@@ -156,42 +140,8 @@ function Upload() {
       const createdMeetingId = meeting.id
       meetingId = createdMeetingId
 
-      setProcessingStage('Transcribiendo con IA...')
-      const pipelinePromise = procesarReunionCompleta(createdMeetingId).then(
-        (data) => ({ ok: true as const, data }),
-        (error: unknown) => ({ ok: false as const, error }),
-      )
-
-      while (true) {
-        const outcome = await Promise.race([
-          pipelinePromise,
-          new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 1500)),
-        ])
-        if (outcome) {
-          if (!outcome.ok) throw outcome.error
-          setProcessingStage('¡Listo!')
-          break
-        }
-
-        const { data: progress, error: progressError } = await supabase
-          .from('reuniones')
-          .select('estado, progreso, error_mensaje')
-          .eq('id', createdMeetingId)
-          .single()
-        if (progressError) throw progressError
-        if (progress.error_mensaje) throw new Error(progress.error_mensaje)
-        if (progress.progreso) setProcessingStage(progress.progreso)
-        if (progress.estado === 'procesada') {
-          setProcessingStage('¡Listo!')
-          await pipelinePromise.then((result) => {
-            if (!result.ok) throw result.error
-          })
-          break
-        }
-      }
-
-      setProcessingStage('¡Listo!')
-      toast.success('Reunión procesada y documentos generados')
+      await procesarReunionCompleta(createdMeetingId)
+      toast.success('Procesando en segundo plano...')
       navigate(`/reuniones/${createdMeetingId}`)
     } catch (error) {
       if (uploadedPath && !meetingId) {
@@ -206,51 +156,10 @@ function Upload() {
           .maybeSingle()
         message = failedMeeting?.error_mensaje || message
       }
-      setProcessingStage('Error')
       setErrors({ submit: `No se pudo procesar la reunión. ${message}` })
       toast.error('No se pudo procesar la reunión')
     } finally {
       setIsUploading(false)
-    }
-  }
-
-  const isTeamsLink = meetingUrl.startsWith('https://teams.microsoft.com/')
-
-  async function handleBotSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!microsoftConnected) {
-      toast.error('Primero conecta tu cuenta Microsoft en Configuración.')
-      return
-    }
-    if (!isTeamsLink) {
-      toast.error('Pega un link válido de Microsoft Teams.')
-      return
-    }
-    if (!botTitle.trim()) {
-      toast.error('Escribe el título de la reunión.')
-      return
-    }
-    if (!Number.isInteger(botDuration) || botDuration < 1 || botDuration > 120) {
-      toast.error('La duración debe ser un número entre 1 y 120 minutos.')
-      return
-    }
-
-    setIsSendingBot(true)
-    try {
-      const meeting = await agregarReunionPorLink({
-        meeting_url: meetingUrl.trim(),
-        titulo: botTitle.trim(),
-        comite_id: botCommitteeId === 'none' ? null : botCommitteeId,
-        duracion_min: botDuration,
-      })
-      const reunionId = meeting.reunion_id ?? meeting.id
-      if (!reunionId) throw new Error('El backend no devolvió el identificador de la reunión.')
-      toast.success('Bot enviado a la reunión')
-      navigate(`/reuniones/${reunionId}`)
-    } catch (error) {
-      toast.error(getApiErrorMessage(error))
-    } finally {
-      setIsSendingBot(false)
     }
   }
 
@@ -259,18 +168,12 @@ function Upload() {
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6 p-6 md:p-8">
       <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm text-slate-500">
-        <Link to="/" className="hover:text-slate-900">Informes</Link>
+        <Link to="/reuniones" className="hover:text-slate-900">Reuniones</Link>
         <span aria-hidden="true">/</span>
         <span className="text-slate-700">Subir reunión</span>
       </nav>
       <PageHeader title="Subir nueva reunión" />
 
-      <Tabs defaultValue="audio" className="mx-auto w-full max-w-2xl space-y-4">
-        <TabsList className="grid h-auto w-full grid-cols-2">
-          <TabsTrigger value="audio">Subir audio</TabsTrigger>
-          <TabsTrigger value="link">Agregar por link</TabsTrigger>
-        </TabsList>
-        <TabsContent value="audio">
       <Card>
         <CardHeader>
           <CardTitle>Información de la reunión</CardTitle>
@@ -342,10 +245,11 @@ function Upload() {
                 <Select value={source} onValueChange={(value: FuenteReunion) => setSource(value)} disabled={isUploading}>
                   <SelectTrigger id="meeting-source" aria-label="Fuente de la reunión"><SelectValue /></SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="upload">Upload</SelectItem>
                     <SelectItem value="teams_manual">Teams</SelectItem>
                     <SelectItem value="zoom">Zoom</SelectItem>
                     <SelectItem value="presencial">Presencial</SelectItem>
-                    <SelectItem value="upload">Otro</SelectItem>
+                    <SelectItem value="otro">Otro</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -361,16 +265,17 @@ function Upload() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-800">Comité <span className="text-red-600">*</span></label>
-              <Select value={committeeId} onValueChange={(value) => { setCommitteeId(value); setErrors((current) => ({ ...current, committee: undefined })) }} disabled={isUploading || committeesLoading || committeesError}>
-                <SelectTrigger aria-label="Comité de la reunión" aria-invalid={Boolean(errors.committee)}>
-                  <SelectValue placeholder={committeesLoading ? 'Cargando comités…' : 'Selecciona un comité'} />
+              <label className="text-sm font-medium text-slate-800">Comité</label>
+              <Select value={committeeId} onValueChange={setCommitteeId} disabled={isUploading || committeesLoading || committeesError}>
+                <SelectTrigger aria-label="Comité de la reunión">
+                  <SelectValue placeholder={committeesLoading ? 'Cargando comités…' : 'Sin comité'} />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="sin_comite">Sin comité</SelectItem>
                   {committees.map((committee) => <SelectItem key={committee.id} value={committee.id}>{committee.nombre}</SelectItem>)}
                 </SelectContent>
               </Select>
-              {errors.committee && <p className="text-xs text-red-600">{errors.committee}</p>}
+              <p className="text-xs text-slate-500">El comité es opcional. Déjalo vacío si es una reunión general.</p>
               {committeesError && <p className="text-xs text-red-600">No se pudieron cargar los comités.</p>}
             </div>
 
@@ -378,81 +283,14 @@ function Upload() {
 
             <div className="flex justify-end border-t border-slate-100 pt-4">
               <Button type="submit" disabled={isUploading || committeesLoading || committeesError} className="min-w-44">
-                {isUploading ? <><LoaderCircle className="h-4 w-4 animate-spin" /> {processingStage || 'Procesando...'}</> : <><UploadCloud className="h-4 w-4" /> Subir y procesar</>}
+                {isUploading ? <><LoaderCircle className="h-4 w-4 animate-spin" /> Subiendo audio...</> : <><UploadCloud className="h-4 w-4" /> Subir y procesar</>}
               </Button>
             </div>
           </form>
         </CardContent>
       </Card>
-        </TabsContent>
-        <TabsContent value="link">
-          {!microsoftConnected && (
-            <div role="status" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
-              <span>⚠️ Primero conecta tu cuenta Microsoft en Configuración{microsoftAccountQuery.isPending ? ' (verificando...)' : ''}</span>
-              <Button type="button" variant="outline" size="sm" onClick={() => navigate('/configuracion')}>
-                Configurar cuenta
-              </Button>
-            </div>
-          )}
-          <Card>
-            <CardHeader>
-              <CardTitle>Agregar reunión de Teams</CardTitle>
-              <CardDescription>Pega el enlace de la reunión y MeetIA enviará el bot para capturar los subtítulos.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleBotSubmit} className="space-y-5">
-                <div className="space-y-2">
-                  <label htmlFor="teams-meeting-link" className="text-sm font-medium text-slate-800">Link de la reunión</label>
-                  <div className="relative">
-                    <LinkIcon className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
-                    <Input
-                      id="teams-meeting-link"
-                      type="url"
-                      value={meetingUrl}
-                      onChange={(event) => setMeetingUrl(event.target.value)}
-                      placeholder="Pega el link de la reunión de Teams"
-                      className="h-14 pl-12 text-base"
-                      aria-invalid={!isTeamsLink}
-                    />
-                  </div>
-                  <div className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${isTeamsLink ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                    {isTeamsLink ? '✅ Link de Teams detectado' : '❌ Link inválido'}
-                  </div>
-                </div>
 
-                <div className="space-y-2">
-                  <label htmlFor="bot-meeting-title" className="text-sm font-medium text-slate-800">Título de la reunión <span className="text-red-600">*</span></label>
-                  <Input id="bot-meeting-title" value={botTitle} onChange={(event) => setBotTitle(event.target.value)} placeholder="Ej. Reunión semanal del comité" required maxLength={300} />
-                </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-800">Comité</label>
-                    <Select value={botCommitteeId} onValueChange={setBotCommitteeId} disabled={committeesLoading || committeesError}>
-                      <SelectTrigger aria-label="Comité de la reunión"><SelectValue placeholder="Selecciona un comité" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">Sin comité</SelectItem>
-                        {committees.map((committee) => <SelectItem key={committee.id} value={committee.id}>{committee.nombre}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                    {committeesError && <p className="text-xs text-red-600">No se pudieron cargar los comités.</p>}
-                  </div>
-                  <div className="space-y-2">
-                    <label htmlFor="bot-duration" className="text-sm font-medium text-slate-800">Duración estimada (min)</label>
-                    <Input id="bot-duration" type="number" min={1} max={120} step={1} value={botDuration} onChange={(event) => setBotDuration(Number(event.target.value))} required />
-                  </div>
-                </div>
-
-                <Button type="submit" size="lg" className="w-full" disabled={isSendingBot || !microsoftConnected || microsoftAccountQuery.isPending || committeesLoading || committeesError || !isTeamsLink || !botTitle.trim()}>
-                  {isSendingBot
-                    ? <><LoaderCircle className="h-5 w-5 animate-spin" /> Enviando bot...</>
-                    : <><Bot className="h-5 w-5" /> Enviar bot a la reunión</>}
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
     </div>
   )
 }

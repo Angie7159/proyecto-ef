@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, ArrowLeft, Download, FileSpreadsheet, FileText, LoaderCircle, RefreshCw } from 'lucide-react'
+import { AlertCircle, ArrowLeft, CircleHelp, Clock3, Download, FileText, LoaderCircle, Pencil, RefreshCw, Search, Users } from 'lucide-react'
 import { format, parse, parseISO } from 'date-fns'
 import { es } from 'date-fns/locale'
 import { toast } from 'sonner'
@@ -22,11 +22,11 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { Area, AreaChart, Bar, BarChart, PolarAngleAxis, RadialBar, RadialBarChart, ResponsiveContainer, XAxis, YAxis } from 'recharts'
 import { supabase } from '@/lib/supabase'
-import { getApiErrorMessage, procesarReunionCompleta } from '@/lib/api'
-import { detenerBot, obtenerDiagnosticoBot, obtenerEstadoBot, obtenerUrlArchivoDiagnostico, reanalizarReunion } from '@/lib/bot'
-import type { Acuerdo, Comite, EstadoAcuerdo, EstadoReunion, Reunion } from '@/types'
+import { actualizarTituloReunion, generarDocumentoReunion, getApiErrorMessage, obtenerEstadoReunion, procesarReunionCompleta, reanalizarReunion, type DocumentoReunion } from '@/lib/api'
+import type { Acuerdo, Comite, EstadoAcuerdo, EstadoReunion, Reunion, ReunionParticipant } from '@/types'
 
 type ReunionConComite = Reunion & { comites: Pick<Comite, 'id' | 'nombre' | 'color'> | null }
 type ProblemaIdentificado = {
@@ -66,6 +66,46 @@ function formatDate(value: string) {
   return format(parseISO(value), 'EEE, d MMM yyyy', { locale: es }).replace('.', '')
 }
 
+function initials(value: string) {
+  return value.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('') || '?'
+}
+
+function participantDetails(value: ReunionParticipant | string) {
+  if (typeof value === 'string') return { nombre: value, email: '', rol: '' }
+  return {
+    nombre: value.nombre || value.name || 'Participante',
+    email: value.email || '',
+    rol: value.rol || value.role || '',
+  }
+}
+
+function scoreBand(score: number) {
+  if (score <= 40) return { label: 'DEFICIENTE', color: '#EF4444', text: 'text-red-700' }
+  if (score <= 60) return { label: 'MEJORABLE', color: '#F59E0B', text: 'text-amber-700' }
+  if (score <= 80) return { label: 'ACEPTABLE', color: '#EAB308', text: 'text-yellow-800' }
+  return { label: 'EXCELENTE', color: '#10B981', text: 'text-emerald-700' }
+}
+
+function progressLabel(progress: string | null | undefined) {
+  const value = (progress ?? '').toLocaleLowerCase()
+  if (value.includes('transcrib')) return 'Transcribiendo...'
+  if (value.includes('analiz')) return 'Analizando...'
+  if (value.includes('document') || value.includes('generando')) return 'Generando documentos...'
+  if (value.includes('bot_enviado')) return 'Preparando reunión...'
+  return progress?.trim() || 'Procesando...'
+}
+
+function progressDetails(progress: string | null | undefined) {
+  const value = (progress ?? '').toLocaleLowerCase()
+  if (value.includes('descargando')) return { label: 'Descargando audio', percent: 25 }
+  if (value.includes('transcrib')) return { label: 'Transcribiendo con IA', percent: 50 }
+  if (value.includes('analiz') || value.includes('reanaliz')) return { label: 'Analizando con IA', percent: 75 }
+  if (value.includes('generando') || value.includes('document')) return { label: 'Generando documentos', percent: 90 }
+  if (value.includes('subiendo')) return { label: 'Subiendo archivos', percent: 95 }
+  if (value.includes('complet') || value.includes('listo')) return { label: 'Completado', percent: 100 }
+  return { label: 'Iniciando procesamiento', percent: 8 }
+}
+
 function DocumentDownloadButton({ label, icon: Icon, url }: { label: string; icon: typeof Download; url: string | null }) {
   return (
     <Button
@@ -84,7 +124,10 @@ function MeetingDetail() {
   const queryClient = useQueryClient()
   const [selectedCommittee, setSelectedCommittee] = useState('')
   const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false)
-  const [diagnosticOpen, setDiagnosticOpen] = useState(false)
+  const [participantsOpen, setParticipantsOpen] = useState(false)
+  const [participantSearch, setParticipantSearch] = useState('')
+  const [titleEditing, setTitleEditing] = useState(false)
+  const [titleDraft, setTitleDraft] = useState('')
 
   const meetingQuery = useQuery({
     queryKey: ['reunion', id],
@@ -98,36 +141,32 @@ function MeetingDetail() {
       if (error) throw error
       return data as ReunionConComite | null
     },
-    refetchInterval: (query) => {
-      const current = query.state.data
-      if (current?.estado !== 'en_proceso') return false
-      return current.progreso?.startsWith('bot_') ? 5000 : 2000
-    },
   })
 
-  const botIsRunning = meetingQuery.data?.estado === 'en_proceso'
-    && Boolean(meetingQuery.data.progreso?.startsWith('bot_'))
-  const botStatusQuery = useQuery({
-    queryKey: ['bot-estado', id],
-    enabled: Boolean(id) && botIsRunning,
-    queryFn: () => obtenerEstadoBot(id!),
-    refetchInterval: botIsRunning ? 5000 : false,
-  })
-  const botDiagnosticsQuery = useQuery({
-    queryKey: ['bot-logs', id],
-    enabled: Boolean(id) && diagnosticOpen,
-    queryFn: () => obtenerDiagnosticoBot(id!),
-    staleTime: 0,
+  const meetingStatusQuery = useQuery({
+    queryKey: ['reunion-estado', id],
+    enabled: Boolean(id),
+    queryFn: () => obtenerEstadoReunion(id!),
+    refetchInterval: (query) => query.state.data?.estado === 'en_proceso' ? 5000 : false,
   })
 
-  const stopBotMutation = useMutation({
-    mutationFn: () => {
-      if (!id) throw new Error('No se encontró el identificador de la reunión.')
-      return detenerBot(id)
-    },
-    onSuccess: (result) => toast.success(result.mensaje || 'Detención solicitada'),
-    onError: (error: unknown) => toast.error(getApiErrorMessage(error)),
-  })
+  useEffect(() => {
+    const status = meetingStatusQuery.data
+    if (!status || !id) return
+    const previous = queryClient.getQueryData<ReunionConComite | null>(['reunion', id])
+    queryClient.setQueryData<ReunionConComite | null>(['reunion', id], (current) => current ? {
+      ...current,
+      estado: status.estado,
+      progreso: status.progreso,
+      error_mensaje: status.error_mensaje,
+      updated_at: status.updated_at,
+    } : current)
+    if (previous?.estado === 'en_proceso' && status.estado === 'procesada') {
+      toast.success('Reunión procesada correctamente')
+      void queryClient.invalidateQueries({ queryKey: ['acuerdos', id] })
+      void queryClient.invalidateQueries({ queryKey: ['reuniones'] })
+    }
+  }, [id, meetingStatusQuery.data, queryClient])
 
   const agreementsQuery = useQuery({
     queryKey: ['acuerdos', id],
@@ -169,6 +208,8 @@ function MeetingDetail() {
       if (!selectedCommittee || !id) throw new Error('Selecciona un comité')
       const { error } = await supabase.from('reuniones').update({ comite_id: selectedCommittee }).eq('id', id)
       if (error) throw error
+      const { error: agreementsError } = await supabase.from('acuerdos').update({ comite_id: selectedCommittee }).eq('reunion_id', id).is('comite_id', null)
+      if (agreementsError) throw agreementsError
     },
     onSuccess: () => {
       toast.success('Comité asignado')
@@ -190,7 +231,8 @@ function MeetingDetail() {
         queryClient.invalidateQueries({ queryKey: ['acuerdos', id] }),
         queryClient.invalidateQueries({ queryKey: ['reuniones'] }),
       ])
-      toast.success('Reunión procesada y documentos generados')
+      toast.success('Procesamiento iniciado en segundo plano')
+      void queryClient.invalidateQueries({ queryKey: ['reunion-estado', id] })
     },
     onError: async (error: unknown) => {
       await queryClient.invalidateQueries({ queryKey: ['reunion', id] })
@@ -210,6 +252,32 @@ function MeetingDetail() {
         queryClient.invalidateQueries({ queryKey: ['reuniones'] }),
       ])
       toast.success('Análisis completado')
+    },
+    onError: (error: unknown) => toast.error(getApiErrorMessage(error)),
+  })
+
+  const updateTitle = useMutation({
+    mutationFn: () => {
+      if (!id || !titleDraft.trim()) throw new Error('Escribe un título para la reunión.')
+      return actualizarTituloReunion(id, titleDraft.trim())
+    },
+    onSuccess: async () => {
+      setTitleEditing(false)
+      await queryClient.invalidateQueries({ queryKey: ['reunion', id] })
+      await queryClient.invalidateQueries({ queryKey: ['reuniones'] })
+      toast.success('Título actualizado')
+    },
+    onError: (error: unknown) => toast.error(getApiErrorMessage(error)),
+  })
+
+  const generateDocument = useMutation({
+    mutationFn: (type: DocumentoReunion) => {
+      if (!id) throw new Error('No se encontró el identificador de la reunión.')
+      return generarDocumentoReunion(id, type)
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['reunion', id] })
+      toast.success('Documento generado')
     },
     onError: (error: unknown) => toast.error(getApiErrorMessage(error)),
   })
@@ -268,44 +336,68 @@ function MeetingDetail() {
   const start = formatTime(meeting.hora_inicio)
   const finish = formatTime(meeting.hora_fin)
   const dateDuration = `${formatDate(meeting.fecha)}${start ? ` · ${start}${finish ? ` - ${finish}` : ''}` : ''}${meeting.duracion_min != null ? ` · ${meeting.duracion_min} min` : ''}`
+  const currentProgress = progressDetails(meeting.progreso)
   const problems = (meeting.problemas_identificados ?? []) as ProblemaIdentificado[]
   const keyPoints = meeting.puntos_clave ?? []
   const committee = meeting.comites
-  const esDelBot = meeting.fuente === 'bot_auto'
   const tieneAudio = Boolean(meeting.audio_url)
-  const esManual = !esDelBot && tieneAudio
-  const mostrarProcesar = esManual && ['en_proceso', 'error', 'pendiente_asignacion'].includes(meeting.estado)
-  const mostrarReanalizar = esDelBot && meeting.estado === 'error' && Boolean(meeting.transcripcion?.trim())
-  const botProgress = botStatusQuery.data?.progreso ?? meeting.progreso ?? ''
-  const botProgressLabels: Record<string, string> = {
-    bot_enviado: 'Enviando bot a Teams...',
-    bot_unido: 'Bot unido a la reunión. Grabando...',
-    bot_en_espera: 'Bot en sala de espera. Admítelo desde Teams.',
-    bot_error: 'Error al unir el bot. Revisa los logs.',
-  }
-  const botElapsed = botStatusQuery.data?.tiempo_transcurrido_seg ?? 0
-  const botElapsedLabel = `${Math.floor(botElapsed / 60)} min ${String(botElapsed % 60).padStart(2, '0')} s`
-  const botCanStop = ['bot_enviado', 'bot_unido', 'bot_en_espera'].includes(botProgress)
-  const botStoppedMessage = Boolean(meeting.error_mensaje && (
-    meeting.error_mensaje.toLowerCase().includes('navegador fue cerrado')
-    || meeting.error_mensaje.toLowerCase().includes('bot_detenido')
-  ))
-  const hasBotTranscript = meeting.fuente === 'bot_auto' && Boolean(meeting.transcripcion?.trim())
-  const showSoftBotError = botStoppedMessage || hasBotTranscript
-  const partialBotResult = meeting.fuente === 'bot_auto' && meeting.progreso === 'bot_procesada_parcial'
+  const mostrarProcesar = tieneAudio && ['en_proceso', 'error', 'pendiente_asignacion'].includes(meeting.estado)
+  const mostrarReanalizar = meeting.estado === 'error' && Boolean(meeting.transcripcion?.trim())
+  const participants = (meeting.participantes_lista ?? []).map(participantDetails)
+  const filteredParticipants = participants.filter((person) =>
+    `${person.nombre} ${person.email} ${person.rol}`.toLocaleLowerCase().includes(participantSearch.trim().toLocaleLowerCase()),
+  )
+  const scoreCards = [
+    { title: 'Puntaje informe', value: meeting.puntaje_informe },
+    { title: 'Participación', value: meeting.participacion_score },
+    { title: 'Sentimiento', value: meeting.sentimiento_score },
+  ]
+  const participationData = (meeting.participantes_lista ?? []).flatMap((participant, index) => {
+    if (typeof participant === 'string') return []
+    const rawValue = participant.intervenciones ?? participant.interventions
+    const participated = participant.participo ?? participant.participated
+    if (typeof rawValue !== 'number' && typeof participated !== 'boolean') return []
+    return [{ name: participant.nombre || participant.name || `P${index + 1}`, value: typeof rawValue === 'number' ? rawValue : participated ? 1 : 0 }]
+  })
 
   return (
     <TooltipProvider>
       <div className="mx-auto w-full max-w-7xl space-y-6 p-6 md:p-8">
         <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2 text-sm text-slate-500">
-          <Link to="/" className="shrink-0 hover:text-slate-900">Informes</Link>
-          <span aria-hidden="true">/</span>
-          <span className="truncate text-slate-700">{title}</span>
+          <Link to="/reuniones" className="inline-flex shrink-0 items-center gap-1 hover:text-slate-900 hover:underline"><ArrowLeft className="h-3.5 w-3.5" />Reuniones</Link>
+          <span aria-hidden="true" className="text-slate-300">/</span>
+          <span className="max-w-md truncate font-medium text-slate-900">{title}</span>
         </nav>
 
         <header className="flex flex-col gap-5 border-b border-slate-200 pb-6 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{title}</h1>
+            <div className="flex items-center gap-2">
+              {titleEditing ? (
+                <input
+                  autoFocus
+                  value={titleDraft}
+                  maxLength={300}
+                  onChange={(event) => setTitleDraft(event.target.value)}
+                  onBlur={() => {
+                    if (titleDraft.trim() && titleDraft.trim() !== title) updateTitle.mutate()
+                    else setTitleEditing(false)
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') event.currentTarget.blur()
+                  }}
+                  disabled={updateTitle.isPending}
+                  aria-label="Editar título de la reunión"
+                  className="min-w-0 max-w-2xl rounded-md border border-indigo-300 bg-white px-2 py-1 text-2xl font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-indigo-200"
+                />
+              ) : (
+                <>
+                  <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{title}</h1>
+                  <Button type="button" variant="ghost" size="icon" aria-label="Editar título" onClick={() => { setTitleDraft(title); setTitleEditing(true) }}>
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                </>
+              )}
+            </div>
             <p className="mt-2 text-sm text-slate-500">{dateDuration}</p>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {committee && (
@@ -313,10 +405,18 @@ function MeetingDetail() {
                   {committee.nombre}
                 </Badge>
               )}
-              <Badge variant="outline" className={meetingStatusClasses[meeting.estado]}>
-                {meetingStatusLabels[meeting.estado]}
-              </Badge>
-              {partialBotResult && <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100">⚠️ Parcial</Badge>}
+              <span className="inline-flex items-center gap-1">
+                <Badge variant="outline" className={meetingStatusClasses[meeting.estado]}>{meetingStatusLabels[meeting.estado]}</Badge>
+                <Tooltip><TooltipTrigger asChild><button type="button" aria-label="Ayuda sobre estados" className="text-slate-400 hover:text-slate-700"><CircleHelp className="h-4 w-4" /></button></TooltipTrigger><TooltipContent className="max-w-xs"><p>Estados de una reunión:</p><p>• Pendiente: Recién subida, falta procesar</p><p>• En proceso: Transcribiendo o analizando con IA</p><p>• Procesada: Lista con resumen, acuerdos y documentos</p><p>• Error: Hubo un problema, revisa el detalle</p></TooltipContent></Tooltip>
+              </span>
+              {meeting.estado === 'en_proceso' && <Badge variant="outline" className="border-blue-200 bg-blue-50 text-blue-700">{progressLabel(meeting.progreso)}</Badge>}
+              <button type="button" onClick={() => setParticipantsOpen(true)} className="inline-flex items-center -space-x-2 rounded-full pl-2 hover:opacity-80" aria-label={`Ver ${participants.length} participantes`}>
+                {participants.slice(0, 5).map((person, index) => (
+                  <span key={`${person.email}-${index}`} title={person.nombre} className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-indigo-100 text-xs font-semibold text-indigo-800">{initials(person.nombre)}</span>
+                ))}
+                {participants.length > 5 && <span className="flex h-8 items-center justify-center rounded-full border-2 border-white bg-slate-200 px-2 text-[10px] font-semibold text-slate-700">+{participants.length - 5} más</span>}
+                {participants.length === 0 && <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600"><Users className="h-3.5 w-3.5" />{meeting.participantes_count || 0} participantes</span>}
+              </button>
             </div>
           </div>
 
@@ -326,7 +426,7 @@ function MeetingDetail() {
                 {processMeeting.isPending
                   ? <LoaderCircle className="h-4 w-4 animate-spin" />
                   : <RefreshCw className="h-4 w-4" />}
-                {processMeeting.isPending ? 'Procesando...' : '🔄 Procesar'}
+                {processMeeting.isPending ? 'Iniciando...' : meeting.estado === 'error' ? 'Reintentar procesamiento' : 'Procesar'}
               </Button>
             )}
             {mostrarReanalizar && (
@@ -337,7 +437,7 @@ function MeetingDetail() {
                 {retryAnalysis.isPending ? 'Re-analizando...' : '🔁 Reintentar análisis'}
               </Button>
             )}
-            {meeting.estado === 'pendiente_asignacion' && (
+            {(!committee || meeting.estado === 'pendiente_asignacion') && (
               <Dialog open={assignmentDialogOpen} onOpenChange={setAssignmentDialogOpen}>
                 <DialogTrigger asChild><Button variant="outline">Asignar comité</Button></DialogTrigger>
                 <DialogContent>
@@ -364,109 +464,81 @@ function MeetingDetail() {
             )}
             {(meeting.estado === 'pendiente_asignacion' || meeting.estado === 'procesada') && (
               <>
-                <DocumentDownloadButton label="Descargar Excel" icon={FileSpreadsheet} url={meeting.archivo_excel_url} />
                 <DocumentDownloadButton label="Descargar Word" icon={FileText} url={meeting.archivo_word_resumen_url} />
               </>
             )}
           </div>
         </header>
 
-        {meeting.error_mensaje && meeting.estado === 'error' && (
-          <Card className={showSoftBotError ? 'border-amber-200 bg-amber-50' : 'border-red-200 bg-red-50'}>
-            <CardContent className={`flex items-start gap-3 p-4 text-sm ${showSoftBotError ? 'text-amber-900' : 'text-red-800'}`}>
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <div>
-                <p className="font-medium">{botStoppedMessage
-                  ? 'El bot fue detenido manualmente. Se guardó lo capturado hasta el momento.'
-                  : hasBotTranscript
-                    ? 'Se guardó la transcripción, pero el procesamiento quedó incompleto.'
-                    : 'No se pudo procesar la reunión'}</p>
-                {!botStoppedMessage && <p className="mt-1">{meeting.error_mensaje}</p>}
-                {showSoftBotError && meeting.transcripcion && <p className="mt-1">La transcripción capturada está disponible en la pestaña Transcripción.</p>}
-                {esDelBot && (
-                  <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => setDiagnosticOpen(true)}>
-                    Ver diagnóstico del bot
-                  </Button>
-                )}
+        {meeting.estado === 'en_proceso' && (
+          <Card className="border-indigo-200 bg-indigo-50/70">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between gap-3">
+                <div><h2 className="font-semibold text-indigo-950">⏳ Procesando reunión...</h2><p className="mt-1 text-sm text-indigo-800">{currentProgress.label}</p></div>
+                <span className="text-sm font-semibold text-indigo-700">{currentProgress.percent}%</span>
               </div>
+              <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-indigo-100" role="progressbar" aria-label={currentProgress.label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={currentProgress.percent}>
+                <div className="h-full rounded-full bg-indigo-600 transition-all duration-500" style={{ width: `${currentProgress.percent}%` }} />
+              </div>
+              {meetingStatusQuery.isError && <p className="mt-2 text-xs text-amber-700">No se pudo actualizar el progreso. Se reintentará en la siguiente consulta.</p>}
             </CardContent>
           </Card>
         )}
 
-        <Dialog open={diagnosticOpen} onOpenChange={setDiagnosticOpen}>
-          <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>Diagnóstico del bot</DialogTitle>
-              <DialogDescription>Capturas de pantalla, HTML y subtítulos guardados durante el intento de ingreso.</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-5">
-              <section className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-900">
-                <h3 className="font-semibold">Error reportado</h3>
-                <p className="mt-1 whitespace-pre-wrap">{meeting.error_mensaje || 'Sin mensaje de error.'}</p>
-              </section>
-              {botDiagnosticsQuery.isLoading && <p className="text-sm text-slate-500">Cargando archivos de diagnóstico...</p>}
-              {botDiagnosticsQuery.isError && <p className="text-sm text-red-600">No se pudieron cargar los logs del bot.</p>}
-              {botDiagnosticsQuery.data && (
-                <>
-                  <section className="space-y-3">
-                    <h3 className="font-semibold text-slate-900">Screenshots ({botDiagnosticsQuery.data.screenshots.length})</h3>
-                    {botDiagnosticsQuery.data.screenshots.length ? (
-                      <div className="grid gap-4 md:grid-cols-2">
-                        {botDiagnosticsQuery.data.screenshots.map((filename) => (
-                          <a key={filename} href={obtenerUrlArchivoDiagnostico(meeting.id, filename)} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md border bg-slate-50">
-                            <img src={obtenerUrlArchivoDiagnostico(meeting.id, filename)} alt={`Captura ${filename}`} loading="lazy" className="w-full object-contain" />
-                            <span className="block border-t px-3 py-2 text-xs text-slate-600">{filename}</span>
-                          </a>
-                        ))}
-                      </div>
-                    ) : <p className="text-sm text-slate-500">No hay screenshots guardados.</p>}
-                  </section>
-                  <section className="space-y-2">
-                    <h3 className="font-semibold text-slate-900">Páginas HTML</h3>
-                    {botDiagnosticsQuery.data.pages.length ? botDiagnosticsQuery.data.pages.map((filename) => (
-                      <a key={filename} href={obtenerUrlArchivoDiagnostico(meeting.id, filename)} target="_blank" rel="noreferrer" className="block text-sm text-indigo-700 underline">{filename}</a>
-                    )) : <p className="text-sm text-slate-500">No hay páginas HTML guardadas.</p>}
-                  </section>
-                  <section className="space-y-2">
-                    <h3 className="font-semibold text-slate-900">Eventos de diagnóstico</h3>
-                    {botDiagnosticsQuery.data.eventos
-                      ? <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950 p-3 text-xs text-slate-100">{botDiagnosticsQuery.data.eventos}</pre>
-                      : <p className="text-sm text-slate-500">No hay eventos de diagnóstico guardados.</p>}
-                  </section>
-                  <section className="space-y-2">
-                    <h3 className="font-semibold text-slate-900">Subtítulos capturados ({botDiagnosticsQuery.data.subtitulos_capturados.length})</h3>
-                    {botDiagnosticsQuery.data.subtitulos_capturados.length ? (
-                      <pre className="max-h-56 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">{JSON.stringify(botDiagnosticsQuery.data.subtitulos_capturados, null, 2)}</pre>
-                    ) : <p className="text-sm text-slate-500">No se registraron subtítulos.</p>}
-                  </section>
-                </>
-              )}
+        <Dialog open={participantsOpen} onOpenChange={setParticipantsOpen}>
+          <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+            <DialogHeader><DialogTitle>Participantes</DialogTitle><DialogDescription>{participants.length} participantes mencionados en la reunión.</DialogDescription></DialogHeader>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input value={participantSearch} onChange={(event) => setParticipantSearch(event.target.value)} placeholder="Buscar por nombre" aria-label="Buscar participante por nombre" className="h-10 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-indigo-200" />
+            </div>
+            <div className="space-y-2">
+              {filteredParticipants.map((person, index) => (
+                <div key={`${person.email}-${person.nombre}-${index}`} className="flex items-center gap-3 rounded-lg border border-slate-100 p-3">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-sm font-semibold text-indigo-800">{initials(person.nombre)}</span>
+                  <span className="min-w-0 flex-1"><span className="block truncate font-medium text-slate-900">{person.nombre}</span><span className="block truncate text-xs text-slate-500">{person.email || 'Email no disponible'}</span></span>
+                  {person.rol && <Badge variant="outline">{person.rol}</Badge>}
+                </div>
+              ))}
+              {filteredParticipants.length === 0 && <p className="py-6 text-center text-sm text-slate-500">{participants.length ? 'No hay coincidencias.' : 'No se encontraron nombres de participantes en la transcripción.'}</p>}
             </div>
           </DialogContent>
         </Dialog>
 
-        {botIsRunning && (
-          <Card className="border-indigo-200 bg-indigo-50/70">
-            <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-indigo-700">
-                  <LoaderCircle className="h-5 w-5 animate-spin" />
-                </div>
-                <div>
-                  <h2 className="font-semibold text-indigo-950">🤖 Bot en la reunión</h2>
-                  <p className="mt-1 text-sm text-indigo-800">{botProgressLabels[botProgress] ?? 'Bot trabajando en la reunión...'}</p>
-                  <p className="mt-1 text-xs text-indigo-700">Tiempo transcurrido: {botElapsedLabel} · Subtítulos capturados: {botStatusQuery.data?.subtitulos_capturados ?? 0}</p>
-                </div>
-              </div>
-              {botCanStop && (
-                <Button type="button" variant="outline" onClick={() => stopBotMutation.mutate()} disabled={stopBotMutation.isPending}>
-                  {stopBotMutation.isPending && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                  {stopBotMutation.isPending ? 'Solicitando...' : 'Detener bot'}
-                </Button>
-              )}
+        {meeting.error_mensaje && meeting.estado === 'error' && (
+          <Card className="border-red-200 bg-red-50">
+            <CardContent className="flex items-start gap-3 p-4 text-sm text-red-800">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div><p className="font-medium">No se pudo procesar la reunión</p><p className="mt-1">{meeting.error_mensaje}</p></div>
             </CardContent>
           </Card>
         )}
+
+        <section aria-label="Métricas de la reunión" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {scoreCards.map(({ title: metricTitle, value }) => {
+            const score = value == null ? null : Math.max(0, Math.min(100, value))
+            const band = score == null ? null : scoreBand(score)
+            return (
+              <Card key={metricTitle} className="h-[160px]">
+                <CardContent className="flex h-full flex-col p-4">
+                  <p className="text-sm font-medium text-slate-500">{metricTitle}</p>
+                  {score == null ? (
+                    <div className="flex flex-1 flex-col items-center justify-center gap-1 text-slate-400"><Clock3 className="h-5 w-5" /><span className="text-xs">Pendiente de análisis</span></div>
+                  ) : metricTitle.toLowerCase().includes('particip') && participationData.length === 0 ? (
+                    <div className="flex flex-1 items-center justify-center gap-3"><span className="text-3xl font-semibold text-slate-900">{score}</span><span className="max-w-28 text-center text-xs text-slate-400">Sin datos de participación individual</span></div>
+                  ) : metricTitle.toLowerCase().includes('particip') ? (
+                    <div className="relative min-h-0 flex-1"><ResponsiveContainer width="100%" height="100%"><BarChart data={participationData} margin={{ top: 8, right: 2, left: 2, bottom: 0 }}><XAxis dataKey="name" hide /><YAxis hide /><Bar dataKey="value" fill="#6366F1" radius={[3, 3, 0, 0]} /></BarChart></ResponsiveContainer><span className="pointer-events-none absolute inset-0 flex items-center justify-center text-3xl font-semibold text-slate-900">{score}</span></div>
+                  ) : metricTitle === 'Sentimiento' ? (
+                    <div className="relative min-h-0 flex-1"><ResponsiveContainer width="100%" height="100%"><AreaChart data={[{ value: score }, { value: score }, { value: score }, { value: score }]} margin={{ top: 8, right: 0, left: 0, bottom: 0 }}><Area type="monotone" dataKey="value" stroke={score <= 40 ? '#EF4444' : score <= 60 ? '#EAB308' : '#10B981'} fill={score <= 40 ? '#EF4444' : score <= 60 ? '#EAB308' : '#10B981'} fillOpacity={0.16} strokeWidth={2} /></AreaChart></ResponsiveContainer><span className="pointer-events-none absolute inset-0 flex items-center justify-center text-3xl font-semibold text-slate-900">{score}</span></div>
+                  ) : (
+                    <div className="relative mx-auto mt-1 h-[92px] w-[92px]"><ResponsiveContainer width="100%" height="100%"><RadialBarChart data={[{ value: score }]} startAngle={90} endAngle={-270} innerRadius="78%" outerRadius="100%" barSize={9}><PolarAngleAxis type="number" domain={[0, 100]} tick={false} /><RadialBar dataKey="value" background={{ fill: '#E2E8F0' }} cornerRadius={8} fill={band?.color} /></RadialBarChart></ResponsiveContainer><span className="pointer-events-none absolute inset-0 flex items-center justify-center text-2xl font-semibold text-slate-900">{score}</span></div>
+                  )}
+                  <p className={`mt-auto text-center text-xs font-semibold tracking-wide ${band?.text ?? 'text-slate-400'}`}>{band?.label ?? (metricTitle === 'Sentimiento' ? 'SENTIMIENTO GENERAL' : 'PUNTAJE SOBRE 100')}</p>
+                </CardContent>
+              </Card>
+            )
+          })}
+        </section>
 
         <Tabs defaultValue="resumen" className="space-y-4">
           <TabsList className="h-auto flex-wrap justify-start bg-transparent p-0">
@@ -474,6 +546,7 @@ function MeetingDetail() {
             <TabsTrigger value="transcripcion" className="rounded-none border-b-2 border-transparent px-4 py-2 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Transcripción</TabsTrigger>
             <TabsTrigger value="acuerdos" className="rounded-none border-b-2 border-transparent px-4 py-2 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Acuerdos</TabsTrigger>
             <TabsTrigger value="descargas" className="rounded-none border-b-2 border-transparent px-4 py-2 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Descargas</TabsTrigger>
+            <TabsTrigger value="participantes" className="rounded-none border-b-2 border-transparent px-4 py-2 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">Participantes</TabsTrigger>
           </TabsList>
 
           <TabsContent value="resumen" className="space-y-5">
@@ -584,19 +657,42 @@ function MeetingDetail() {
 
           <TabsContent value="descargas">
             <div className="grid gap-4 md:grid-cols-2">
-              <Card>
-                <CardContent className="flex items-center justify-between gap-4 p-5">
-                  <div><h2 className="font-medium text-slate-900">Informe Excel</h2><p className="mt-1 text-sm text-slate-500">Hoja de acuerdos y seguimiento</p></div>
-                  <DocumentDownloadButton label="Descargar Excel" icon={Download} url={meeting.archivo_excel_url} />
-                </CardContent>
-              </Card>
-              <Card>
-                <CardContent className="flex items-center justify-between gap-4 p-5">
-                  <div><h2 className="font-medium text-slate-900">Resumen Word</h2><p className="mt-1 text-sm text-slate-500">Documento de resumen de la reunión</p></div>
-                  <DocumentDownloadButton label="Descargar Word" icon={Download} url={meeting.archivo_word_resumen_url} />
-                </CardContent>
-              </Card>
+              {([
+                { type: 'word_resumen', title: 'Resumen Word', description: 'Resumen ejecutivo de la reuni?n', url: meeting.archivo_word_resumen_url },
+                { type: 'word_mapa_conceptual', title: 'Mapa conceptual', description: 'Problemas, acuerdos y puntos clave', url: meeting.archivo_word_smartart_url },
+              ] as const).map(({ type, title: documentTitle, description, url }) => {
+                const isGenerating = generateDocument.isPending && generateDocument.variables === type
+                return (
+                  <Card key={type}>
+                    <CardContent className="flex h-full flex-col justify-between gap-5 p-5">
+                      <div><h2 className="font-medium text-slate-900">{documentTitle}</h2><p className="mt-1 text-sm text-slate-500">{description}</p></div>
+                      {url ? (
+                        <Button type="button" variant="outline" onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}><Download className="h-4 w-4" />Descargar</Button>
+                      ) : (
+                        <Button type="button" variant="outline" onClick={() => generateDocument.mutate(type)} disabled={generateDocument.isPending}>
+                          {isGenerating ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                          {isGenerating ? 'Generando?' : 'Generar'}
+                        </Button>
+                      )}
+                    </CardContent>
+                  </Card>
+                )
+              })}
             </div>
+          </TabsContent>
+
+          <TabsContent value="participantes">
+            <Card>
+              <CardHeader><CardTitle className="text-base">Participantes de la reunión</CardTitle></CardHeader>
+              <CardContent className="pt-0">
+                {participants.length ? (
+                  <Table>
+                    <TableHeader><TableRow><TableHead>Nombre</TableHead><TableHead>Email</TableHead><TableHead>Rol</TableHead></TableRow></TableHeader>
+                    <TableBody>{participants.map((person, index) => <TableRow key={index}><TableCell className="font-medium">{person.nombre}</TableCell><TableCell>{person.email || '?'}</TableCell><TableCell>{person.rol || '?'}</TableCell></TableRow>)}</TableBody>
+                  </Table>
+                ) : <p className="py-8 text-center text-sm text-slate-500">A?n no hay participantes identificados.</p>}
+              </CardContent>
+            </Card>
           </TabsContent>
         </Tabs>
       </div>

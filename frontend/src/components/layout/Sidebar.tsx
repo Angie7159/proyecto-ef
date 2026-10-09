@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import {
   Calendar,
-  FileText,
+  FileSpreadsheet,
   GraduationCap,
   LayoutDashboard,
   Settings,
@@ -12,7 +12,7 @@ import {
 const navigation = [
   { label: 'Dashboard', to: '/', icon: LayoutDashboard },
   { label: 'Reuniones', to: '/reuniones', icon: Calendar },
-  { label: 'Informes', to: '/informes', icon: FileText },
+  { label: 'Seguimiento', to: '/seguimiento', icon: FileSpreadsheet },
   { label: 'Comités', to: '/comites', icon: Users },
   { label: 'Subir', to: '/subir', icon: Upload },
   { label: 'Configuración', to: '/configuracion', icon: Settings },

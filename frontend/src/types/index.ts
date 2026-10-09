@@ -11,10 +11,10 @@ export type EstadoReunion =
 export type FuenteReunion = 
   | 'teams_auto' 
   | 'teams_manual' 
-  | 'bot_auto'
   | 'zoom' 
   | 'presencial' 
-  | 'upload';
+  | 'upload'
+  | 'otro';
 
 export type EstadoAcuerdo = 
   | 'pendiente' 
@@ -78,13 +78,16 @@ export interface Reunion {
   hora_fin: string | null;
   duracion_min: number | null;
   participantes_count: number;
-  participantes_lista: any[];
+  participantes_lista: (ReunionParticipant | string)[];
   fuente: FuenteReunion;
   estado: EstadoReunion;
   transcripcion: string | null;
   resumen_ejecutivo: string | null;
   problemas_identificados: any[];
   puntos_clave: string[];
+  puntaje_informe: number | null;
+  participacion_score: number | null;
+  sentimiento_score: number | null;
   archivo_excel_url: string | null;
   archivo_word_resumen_url: string | null;
   archivo_word_smartart_url: string | null;
@@ -95,10 +98,22 @@ export interface Reunion {
   updated_at: string;
 }
 
+export interface ReunionParticipant {
+  nombre?: string | null;
+  name?: string | null;
+  email?: string | null;
+  rol?: string | null;
+  role?: string | null;
+  participo?: boolean;
+  participated?: boolean;
+  intervenciones?: number;
+  interventions?: number;
+}
+
 export interface Acuerdo {
   id: string;
   reunion_id: string;
-  comite_id: string;
+  comite_id: string | null;
   descripcion: string;
   responsable: string | null;
   fecha_limite: string | null;
