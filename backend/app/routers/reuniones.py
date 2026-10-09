@@ -1,6 +1,6 @@
 import os
 import tempfile
-from datetime import date
+from datetime import date, datetime
 from pathlib import PurePosixPath
 from time import perf_counter
 from typing import Any
@@ -110,6 +110,137 @@ def eliminar_reunion(reunion_id: str) -> Response:
         raise
     except Exception as exc:
         raise_database_error(exc, "eliminar la reunión")
+
+
+@router.post("/{reunion_id}/reanalizar")
+def reanalizar_reunion(reunion_id: str) -> dict[str, Any]:
+    """Re-ejecuta análisis y documentos desde la transcripción almacenada."""
+    supabase = get_supabase()
+    try:
+        result = (
+            supabase.table("reuniones").select("*")
+            .eq("id", reunion_id).maybe_single().execute()
+        )
+        reunion = result.data
+        if reunion is None:
+            raise HTTPException(status_code=404, detail="Reunión no encontrada.")
+        transcript = reunion.get("transcripcion")
+        if not isinstance(transcript, str) or not transcript.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="La reunión no tiene transcripción. No se puede re-analizar.",
+            )
+        if reunion.get("fuente") != "bot_auto":
+            raise HTTPException(status_code=400, detail="El reanálisis está disponible para reuniones del bot.")
+
+        committee_name = ""
+        committee_id = reunion.get("comite_id")
+        if committee_id:
+            committee_result = (
+                supabase.table("comites").select("nombre")
+                .eq("id", committee_id).maybe_single().execute()
+            )
+            if committee_result.data:
+                committee_name = committee_result.data.get("nombre", "")
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔁 Re-analizando reunión {reunion_id}...", flush=True)
+        analysis = analizar_transcripcion(transcript, committee_name)
+        detected_agreements = analysis.get("acuerdos_alcanzados", [])
+        if detected_agreements and not committee_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Asigna un comité antes de guardar los acuerdos detectados.",
+            )
+
+        supabase.table("reuniones").update({
+            "estado": "en_proceso",
+            "progreso": "reanalizando",
+            "error_mensaje": None,
+            "resumen_ejecutivo": analysis.get("resumen_ejecutivo", ""),
+            "problemas_identificados": analysis.get("problemas_identificados", []),
+            "puntos_clave": analysis.get("puntos_clave", []),
+            "progreso": "guardando_acuerdos",
+        }).eq("id", reunion_id).execute()
+
+        agreement_rows = [
+            {
+                "reunion_id": reunion_id,
+                "comite_id": committee_id,
+                "descripcion": item.get("descripcion", ""),
+                "responsable": item.get("responsable") or None,
+                "fecha_limite": item.get("fecha_limite"),
+                "categoria": item.get("categoria"),
+                "estado": "pendiente",
+                "es_nuevo": True,
+            }
+            for item in detected_agreements
+        ]
+        # Reemplaza los acuerdos generados anteriormente para esta reunión.
+        supabase.table("acuerdos").delete().eq("reunion_id", reunion_id).execute()
+        if agreement_rows:
+            supabase.table("acuerdos").insert(agreement_rows).execute()
+        saved_agreements = (
+            supabase.table("acuerdos").select("*")
+            .eq("reunion_id", reunion_id).execute().data or []
+        )
+
+        reunion.update({
+            "resumen_ejecutivo": analysis.get("resumen_ejecutivo", ""),
+            "problemas_identificados": analysis.get("problemas_identificados", []),
+            "puntos_clave": analysis.get("puntos_clave", []),
+        })
+        documents = {
+            "archivo_excel_url": (
+                "resumen.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                generar_excel(reunion, saved_agreements, []),
+            ),
+            "archivo_word_resumen_url": (
+                "resumen.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                generar_word_resumen(reunion, saved_agreements),
+            ),
+            "archivo_word_smartart_url": (
+                "mapa_mental.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                generar_word_mapa_mental(reunion),
+            ),
+        }
+        urls: dict[str, str] = {}
+        for field, (filename, media_type, content) in documents.items():
+            storage_path = f"{reunion_id}/{filename}"
+            supabase.storage.from_("documentos").upload(
+                storage_path,
+                content,
+                file_options={"content-type": media_type, "upsert": "true"},
+            )
+            urls[field] = supabase.storage.from_("documentos").get_public_url(storage_path)
+
+        supabase.table("reuniones").update({
+            **urls,
+            "estado": "procesada",
+            "error_mensaje": None,
+            "progreso": "reanalizado",
+        }).eq("id", reunion_id).execute()
+        return {
+            "success": True,
+            "reunion_id": reunion_id,
+            "acuerdos_generados": len(saved_agreements),
+            "mensaje": "Análisis completado exitosamente",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        message = str(exc) or exc.__class__.__name__
+        try:
+            supabase.table("reuniones").update({
+                "estado": "error",
+                "progreso": "reanalisis_error",
+                "error_mensaje": message,
+            }).eq("id", reunion_id).execute()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=message) from exc
 
 
 @router.post("/{reunion_id}/procesar-completo")

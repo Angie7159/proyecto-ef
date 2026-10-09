@@ -25,6 +25,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { supabase } from '@/lib/supabase'
 import { getApiErrorMessage, procesarReunionCompleta } from '@/lib/api'
+import { detenerBot, obtenerDiagnosticoBot, obtenerEstadoBot, obtenerUrlArchivoDiagnostico, reanalizarReunion } from '@/lib/bot'
 import type { Acuerdo, Comite, EstadoAcuerdo, EstadoReunion, Reunion } from '@/types'
 
 type ReunionConComite = Reunion & { comites: Pick<Comite, 'id' | 'nombre' | 'color'> | null }
@@ -83,6 +84,7 @@ function MeetingDetail() {
   const queryClient = useQueryClient()
   const [selectedCommittee, setSelectedCommittee] = useState('')
   const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false)
+  const [diagnosticOpen, setDiagnosticOpen] = useState(false)
 
   const meetingQuery = useQuery({
     queryKey: ['reunion', id],
@@ -96,7 +98,35 @@ function MeetingDetail() {
       if (error) throw error
       return data as ReunionConComite | null
     },
-    refetchInterval: (query) => query.state.data?.estado === 'en_proceso' ? 2000 : false,
+    refetchInterval: (query) => {
+      const current = query.state.data
+      if (current?.estado !== 'en_proceso') return false
+      return current.progreso?.startsWith('bot_') ? 5000 : 2000
+    },
+  })
+
+  const botIsRunning = meetingQuery.data?.estado === 'en_proceso'
+    && Boolean(meetingQuery.data.progreso?.startsWith('bot_'))
+  const botStatusQuery = useQuery({
+    queryKey: ['bot-estado', id],
+    enabled: Boolean(id) && botIsRunning,
+    queryFn: () => obtenerEstadoBot(id!),
+    refetchInterval: botIsRunning ? 5000 : false,
+  })
+  const botDiagnosticsQuery = useQuery({
+    queryKey: ['bot-logs', id],
+    enabled: Boolean(id) && diagnosticOpen,
+    queryFn: () => obtenerDiagnosticoBot(id!),
+    staleTime: 0,
+  })
+
+  const stopBotMutation = useMutation({
+    mutationFn: () => {
+      if (!id) throw new Error('No se encontró el identificador de la reunión.')
+      return detenerBot(id)
+    },
+    onSuccess: (result) => toast.success(result.mensaje || 'Detención solicitada'),
+    onError: (error: unknown) => toast.error(getApiErrorMessage(error)),
   })
 
   const agreementsQuery = useQuery({
@@ -168,6 +198,22 @@ function MeetingDetail() {
     },
   })
 
+  const retryAnalysis = useMutation({
+    mutationFn: () => {
+      if (!id) throw new Error('No se encontró el identificador de la reunión.')
+      return reanalizarReunion(id)
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['reunion', id] }),
+        queryClient.invalidateQueries({ queryKey: ['acuerdos', id] }),
+        queryClient.invalidateQueries({ queryKey: ['reuniones'] }),
+      ])
+      toast.success('Análisis completado')
+    },
+    onError: (error: unknown) => toast.error(getApiErrorMessage(error)),
+  })
+
   useEffect(() => {
     if (!processMeeting.isPending) return
     const intervalId = window.setInterval(() => {
@@ -175,6 +221,14 @@ function MeetingDetail() {
     }, 2000)
     return () => window.clearInterval(intervalId)
   }, [meetingQuery.refetch, processMeeting.isPending])
+
+  useEffect(() => {
+    if (meetingQuery.data?.estado !== 'procesada') return
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['acuerdos', id] }),
+      queryClient.invalidateQueries({ queryKey: ['reuniones'] }),
+    ])
+  }, [id, meetingQuery.data?.estado, queryClient])
 
   if (meetingQuery.isLoading) {
     return (
@@ -217,6 +271,28 @@ function MeetingDetail() {
   const problems = (meeting.problemas_identificados ?? []) as ProblemaIdentificado[]
   const keyPoints = meeting.puntos_clave ?? []
   const committee = meeting.comites
+  const esDelBot = meeting.fuente === 'bot_auto'
+  const tieneAudio = Boolean(meeting.audio_url)
+  const esManual = !esDelBot && tieneAudio
+  const mostrarProcesar = esManual && ['en_proceso', 'error', 'pendiente_asignacion'].includes(meeting.estado)
+  const mostrarReanalizar = esDelBot && meeting.estado === 'error' && Boolean(meeting.transcripcion?.trim())
+  const botProgress = botStatusQuery.data?.progreso ?? meeting.progreso ?? ''
+  const botProgressLabels: Record<string, string> = {
+    bot_enviado: 'Enviando bot a Teams...',
+    bot_unido: 'Bot unido a la reunión. Grabando...',
+    bot_en_espera: 'Bot en sala de espera. Admítelo desde Teams.',
+    bot_error: 'Error al unir el bot. Revisa los logs.',
+  }
+  const botElapsed = botStatusQuery.data?.tiempo_transcurrido_seg ?? 0
+  const botElapsedLabel = `${Math.floor(botElapsed / 60)} min ${String(botElapsed % 60).padStart(2, '0')} s`
+  const botCanStop = ['bot_enviado', 'bot_unido', 'bot_en_espera'].includes(botProgress)
+  const botStoppedMessage = Boolean(meeting.error_mensaje && (
+    meeting.error_mensaje.toLowerCase().includes('navegador fue cerrado')
+    || meeting.error_mensaje.toLowerCase().includes('bot_detenido')
+  ))
+  const hasBotTranscript = meeting.fuente === 'bot_auto' && Boolean(meeting.transcripcion?.trim())
+  const showSoftBotError = botStoppedMessage || hasBotTranscript
+  const partialBotResult = meeting.fuente === 'bot_auto' && meeting.progreso === 'bot_procesada_parcial'
 
   return (
     <TooltipProvider>
@@ -240,16 +316,25 @@ function MeetingDetail() {
               <Badge variant="outline" className={meetingStatusClasses[meeting.estado]}>
                 {meetingStatusLabels[meeting.estado]}
               </Badge>
+              {partialBotResult && <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100">⚠️ Parcial</Badge>}
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {(meeting.estado === 'en_proceso' || meeting.estado === 'error') && (
+            {mostrarProcesar && (
               <Button onClick={() => processMeeting.mutate()} disabled={processMeeting.isPending}>
                 {processMeeting.isPending
                   ? <LoaderCircle className="h-4 w-4 animate-spin" />
                   : <RefreshCw className="h-4 w-4" />}
                 {processMeeting.isPending ? 'Procesando...' : '🔄 Procesar'}
+              </Button>
+            )}
+            {mostrarReanalizar && (
+              <Button onClick={() => retryAnalysis.mutate()} disabled={retryAnalysis.isPending}>
+                {retryAnalysis.isPending
+                  ? <LoaderCircle className="h-4 w-4 animate-spin" />
+                  : <RefreshCw className="h-4 w-4" />}
+                {retryAnalysis.isPending ? 'Re-analizando...' : '🔁 Reintentar análisis'}
               </Button>
             )}
             {meeting.estado === 'pendiente_asignacion' && (
@@ -287,10 +372,98 @@ function MeetingDetail() {
         </header>
 
         {meeting.error_mensaje && meeting.estado === 'error' && (
-          <Card className="border-red-200 bg-red-50">
-            <CardContent className="flex items-start gap-3 p-4 text-sm text-red-800">
+          <Card className={showSoftBotError ? 'border-amber-200 bg-amber-50' : 'border-red-200 bg-red-50'}>
+            <CardContent className={`flex items-start gap-3 p-4 text-sm ${showSoftBotError ? 'text-amber-900' : 'text-red-800'}`}>
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <div><p className="font-medium">No se pudo procesar la reunión</p><p className="mt-1">{meeting.error_mensaje}</p></div>
+              <div>
+                <p className="font-medium">{botStoppedMessage
+                  ? 'El bot fue detenido manualmente. Se guardó lo capturado hasta el momento.'
+                  : hasBotTranscript
+                    ? 'Se guardó la transcripción, pero el procesamiento quedó incompleto.'
+                    : 'No se pudo procesar la reunión'}</p>
+                {!botStoppedMessage && <p className="mt-1">{meeting.error_mensaje}</p>}
+                {showSoftBotError && meeting.transcripcion && <p className="mt-1">La transcripción capturada está disponible en la pestaña Transcripción.</p>}
+                {esDelBot && (
+                  <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => setDiagnosticOpen(true)}>
+                    Ver diagnóstico del bot
+                  </Button>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        <Dialog open={diagnosticOpen} onOpenChange={setDiagnosticOpen}>
+          <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Diagnóstico del bot</DialogTitle>
+              <DialogDescription>Capturas de pantalla, HTML y subtítulos guardados durante el intento de ingreso.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-5">
+              <section className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-900">
+                <h3 className="font-semibold">Error reportado</h3>
+                <p className="mt-1 whitespace-pre-wrap">{meeting.error_mensaje || 'Sin mensaje de error.'}</p>
+              </section>
+              {botDiagnosticsQuery.isLoading && <p className="text-sm text-slate-500">Cargando archivos de diagnóstico...</p>}
+              {botDiagnosticsQuery.isError && <p className="text-sm text-red-600">No se pudieron cargar los logs del bot.</p>}
+              {botDiagnosticsQuery.data && (
+                <>
+                  <section className="space-y-3">
+                    <h3 className="font-semibold text-slate-900">Screenshots ({botDiagnosticsQuery.data.screenshots.length})</h3>
+                    {botDiagnosticsQuery.data.screenshots.length ? (
+                      <div className="grid gap-4 md:grid-cols-2">
+                        {botDiagnosticsQuery.data.screenshots.map((filename) => (
+                          <a key={filename} href={obtenerUrlArchivoDiagnostico(meeting.id, filename)} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md border bg-slate-50">
+                            <img src={obtenerUrlArchivoDiagnostico(meeting.id, filename)} alt={`Captura ${filename}`} loading="lazy" className="w-full object-contain" />
+                            <span className="block border-t px-3 py-2 text-xs text-slate-600">{filename}</span>
+                          </a>
+                        ))}
+                      </div>
+                    ) : <p className="text-sm text-slate-500">No hay screenshots guardados.</p>}
+                  </section>
+                  <section className="space-y-2">
+                    <h3 className="font-semibold text-slate-900">Páginas HTML</h3>
+                    {botDiagnosticsQuery.data.pages.length ? botDiagnosticsQuery.data.pages.map((filename) => (
+                      <a key={filename} href={obtenerUrlArchivoDiagnostico(meeting.id, filename)} target="_blank" rel="noreferrer" className="block text-sm text-indigo-700 underline">{filename}</a>
+                    )) : <p className="text-sm text-slate-500">No hay páginas HTML guardadas.</p>}
+                  </section>
+                  <section className="space-y-2">
+                    <h3 className="font-semibold text-slate-900">Eventos de diagnóstico</h3>
+                    {botDiagnosticsQuery.data.eventos
+                      ? <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950 p-3 text-xs text-slate-100">{botDiagnosticsQuery.data.eventos}</pre>
+                      : <p className="text-sm text-slate-500">No hay eventos de diagnóstico guardados.</p>}
+                  </section>
+                  <section className="space-y-2">
+                    <h3 className="font-semibold text-slate-900">Subtítulos capturados ({botDiagnosticsQuery.data.subtitulos_capturados.length})</h3>
+                    {botDiagnosticsQuery.data.subtitulos_capturados.length ? (
+                      <pre className="max-h-56 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">{JSON.stringify(botDiagnosticsQuery.data.subtitulos_capturados, null, 2)}</pre>
+                    ) : <p className="text-sm text-slate-500">No se registraron subtítulos.</p>}
+                  </section>
+                </>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {botIsRunning && (
+          <Card className="border-indigo-200 bg-indigo-50/70">
+            <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-indigo-700">
+                  <LoaderCircle className="h-5 w-5 animate-spin" />
+                </div>
+                <div>
+                  <h2 className="font-semibold text-indigo-950">🤖 Bot en la reunión</h2>
+                  <p className="mt-1 text-sm text-indigo-800">{botProgressLabels[botProgress] ?? 'Bot trabajando en la reunión...'}</p>
+                  <p className="mt-1 text-xs text-indigo-700">Tiempo transcurrido: {botElapsedLabel} · Subtítulos capturados: {botStatusQuery.data?.subtitulos_capturados ?? 0}</p>
+                </div>
+              </div>
+              {botCanStop && (
+                <Button type="button" variant="outline" onClick={() => stopBotMutation.mutate()} disabled={stopBotMutation.isPending}>
+                  {stopBotMutation.isPending && <LoaderCircle className="h-4 w-4 animate-spin" />}
+                  {stopBotMutation.isPending ? 'Solicitando...' : 'Detener bot'}
+                </Button>
+              )}
             </CardContent>
           </Card>
         )}

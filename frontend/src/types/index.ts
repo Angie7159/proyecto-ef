@@ -11,6 +11,7 @@ export type EstadoReunion =
 export type FuenteReunion = 
   | 'teams_auto' 
   | 'teams_manual' 
+  | 'bot_auto'
   | 'zoom' 
   | 'presencial' 
   | 'upload';
@@ -56,6 +57,8 @@ export interface ReunionListItem {
   participantes: number;
   fuente: FuenteReunion;
   estado: EstadoReunion;
+  progreso?: string | null;
+  error_mensaje?: string | null;
   comite_id: string | null;
   comite_nombre: string | null;
   comite_color: string | null;

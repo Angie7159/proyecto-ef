@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Check, Download, ExternalLink, LoaderCircle, ShieldAlert, UserRound } from 'lucide-react'
+import { AlertTriangle, Building2, Check, Download, ExternalLink, Link2, LoaderCircle, RefreshCw, ShieldAlert, Unlink, UserRound } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
+import { es } from 'date-fns/locale'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/badge'
@@ -12,6 +14,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { supabase } from '@/lib/supabase'
+import { conectarCuentaMicrosoft, confirmarConexionMicrosoft, desconectarCuentaMicrosoft, obtenerEstadoCuentaMicrosoft } from '@/lib/bot'
+import { getApiErrorMessage } from '@/lib/api'
 
 type Preferences = {
   language: string; theme: string; emailNotifications: boolean; compactMode: boolean
@@ -48,8 +52,15 @@ export default function Configuracion() {
   const [profile, setProfile] = useState(initialProfile)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deletePhrase, setDeletePhrase] = useState('')
+  const [conectando, setConectando] = useState(false)
   const queryClient = useQueryClient()
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'URL no configurada'
+
+  const cuentaMicrosoftQuery = useQuery({
+    queryKey: ['cuenta-microsoft'],
+    queryFn: obtenerEstadoCuentaMicrosoft,
+    retry: 1,
+  })
 
   const healthQuery = useQuery({
     queryKey: ['backend-health'],
@@ -63,8 +74,62 @@ export default function Configuracion() {
   })
 
   const lastSync = useMemo(() => new Intl.DateTimeFormat('es-PE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date()), [])
-  const updateSettings = <K extends keyof Preferences>(key: K, value: Preferences[K]) => setSettings((current) => ({ ...current, [key]: value }))
 
+  async function handleConectar() {
+    setConectando(true)
+    let timeoutReached = false
+    const timeoutId = window.setTimeout(() => {
+      timeoutReached = true
+      setConectando(false)
+      toast.error("⌛ No pudimos detectar el login automáticamente. Si ya te logueaste en la ventana de Chromium, haz clic en 'Ya terminé de iniciar sesión'.")
+    }, 360_000)
+    try {
+      const response = await conectarCuentaMicrosoft()
+      toast.success(`✅ Cuenta conectada: ${response.email || 'OK'}`)
+      await queryClient.invalidateQueries({ queryKey: ['cuenta-microsoft'] })
+    } catch (error) {
+      const message = getApiErrorMessage(error)
+      if (message.includes('408') || message.toLowerCase().includes('5 minutos')) {
+        toast.error("⌛ No pudimos detectar el login automáticamente. Si ya te logueaste en la ventana de Chromium, haz clic en 'Ya terminé de iniciar sesión'.")
+      } else {
+        toast.error(message)
+      }
+    } finally {
+      window.clearTimeout(timeoutId)
+      if (!timeoutReached) setConectando(false)
+    }
+  }
+
+  async function handleConfirmarManual() {
+    try {
+      const response = await confirmarConexionMicrosoft()
+      toast.success(`✅ Cuenta conectada: ${response.email || 'OK'}`)
+      await queryClient.invalidateQueries({ queryKey: ['cuenta-microsoft'] })
+      setConectando(false)
+    } catch {
+      toast.error('Aún no detectamos el login. Espera unos segundos.')
+    }
+  }
+  async function desconectarCuenta(confirmar: boolean) {
+    if (confirmar && !window.confirm('¿Desconectar la cuenta Microsoft? El bot ya no podrá unirse a reuniones automáticamente.')) return false
+    try {
+      await desconectarCuentaMicrosoft()
+      toast.success('Cuenta desconectada')
+      await queryClient.invalidateQueries({ queryKey: ['cuenta-microsoft'] })
+      return true
+    } catch (error) {
+      toast.error(getApiErrorMessage(error))
+      return false
+    }
+  }
+
+  async function handleDesconectar() {
+    await desconectarCuenta(true)
+  }
+
+  async function handleReconectar() {
+    if (await desconectarCuenta(true)) await handleConectar()
+  }
   const exportMutation = useMutation({
     mutationFn: async () => {
       const [meetings, agreements, committees] = await Promise.all([
@@ -115,6 +180,55 @@ export default function Configuracion() {
           <Button onClick={() => toast.success('Perfil actualizado (demo)')}>Guardar cambios</Button>
         </CardContent></Card>
 
+        <Card>
+          <CardHeader>
+            <CardTitle>Cuenta de Microsoft</CardTitle>
+            <CardDescription>Conecta tu cuenta de Microsoft para que MeetIA pueda unirse a tus reuniones de Teams automáticamente. Solo necesitas hacerlo una vez.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {cuentaMicrosoftQuery.data?.conectada ? (
+              <>
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500 font-semibold text-white">{initials(cuentaMicrosoftQuery.data.email || '')}</div>
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{cuentaMicrosoftQuery.data.email || 'Cuenta Microsoft conectada'}</p>
+                      {cuentaMicrosoftQuery.data.fecha_conexion && <p className="text-xs text-slate-500">Conectada hace {formatDistanceToNow(new Date(cuentaMicrosoftQuery.data.fecha_conexion), { locale: es })}</p>}
+                    </div>
+                  </div>
+                  <Badge className="shrink-0 bg-emerald-500">✅ Conectada</Badge>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={handleReconectar} disabled={conectando}>
+                    <RefreshCw className="mr-2 h-4 w-4" />Reconectar
+                  </Button>
+                  <Button variant="outline" onClick={handleDesconectar} disabled={conectando} className="text-red-600">
+                    <Unlink className="mr-2 h-4 w-4" />Desconectar
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center gap-4 rounded-lg bg-slate-50 p-4">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border bg-white">
+                    <Building2 className="h-6 w-6 text-slate-600" />
+                  </div>
+                  <div>
+                    <p className="font-medium">Conecta tu cuenta de Microsoft</p>
+                    <p className="text-sm text-slate-500">MeetIA podrá unirse a tus reuniones de Teams automáticamente</p>
+                  </div>
+                </div>
+                {cuentaMicrosoftQuery.isError && <p role="alert" className="text-sm text-red-600">No se pudo consultar el estado de la cuenta Microsoft.</p>}
+                <Button onClick={handleConectar} disabled={conectando} className="w-full sm:w-auto">
+                  {conectando ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Link2 className="mr-2 h-4 w-4" />}
+                  {conectando ? 'Abriendo Microsoft...' : 'Conectar cuenta Microsoft'}
+                </Button>
+                <p className="text-xs text-slate-500">Se abrirá una ventana para que inicies sesión. MeetIA nunca guarda tu contraseña, solo la sesión del navegador.</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         <Card><CardHeader><CardTitle>Preferencias</CardTitle><CardDescription>Personaliza tu experiencia de uso.</CardDescription></CardHeader><CardContent className="space-y-5">
           <div className="grid gap-4 md:grid-cols-2"><SelectField label="Idioma" value={settings.language} onValueChange={(value) => setSettings((current) => ({ ...current, language: value }))} options={ [['es', 'Español'], ['en', 'Inglés'], ['pt', 'Portugués']] } /><SelectField label="Tema" value={settings.theme} onValueChange={(value) => setSettings((current) => ({ ...current, theme: value }))} options={ [['light', 'Claro'], ['dark', 'Oscuro'], ['system', 'Automático']] } /></div>
           <SwitchField label="Recibir notificaciones por email cuando una reunión termine de procesarse" checked={settings.emailNotifications} onCheckedChange={(value) => setSettings((current) => ({ ...current, emailNotifications: value }))} />
@@ -149,6 +263,16 @@ export default function Configuracion() {
       </div>
 
       <Dialog open={deleteOpen} onOpenChange={(open) => { setDeleteOpen(open); if (!open) setDeletePhrase('') }}><DialogContent><DialogHeader><DialogTitle className="flex items-center gap-2 text-red-700"><AlertTriangle className="h-5 w-5" />Eliminar todas las reuniones</DialogTitle><DialogDescription>Se eliminarán permanentemente las reuniones guardadas. Escribe <strong>ELIMINAR</strong> para confirmar esta acción.</DialogDescription></DialogHeader><Input autoFocus value={deletePhrase} onChange={(event) => setDeletePhrase(event.target.value)} placeholder="ELIMINAR" aria-label="Escribe ELIMINAR para confirmar" /><DialogFooter><Button variant="outline" onClick={() => setDeleteOpen(false)} disabled={deleteMutation.isPending}>Cancelar</Button><Button variant="destructive" disabled={deletePhrase !== 'ELIMINAR' || deleteMutation.isPending} onClick={() => deleteMutation.mutate()}>{deleteMutation.isPending ? <><LoaderCircle className="mr-2 h-4 w-4 animate-spin" />Eliminando…</> : <><Check className="mr-2 h-4 w-4" />Eliminar reuniones</>}</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={conectando}>
+        <DialogContent className="[&>button]:hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><LoaderCircle className="h-5 w-5 animate-spin text-indigo-600" />Conectando cuenta Microsoft</DialogTitle>
+            <DialogDescription className="whitespace-pre-line">🔐 Se abrió una ventana de Chromium.{ '\n' }1. Inicia sesión con tu cuenta Microsoft{ '\n' }2. ESPERA hasta llegar a la pantalla principal de Teams (verás tus chats y equipos){ '\n' }3. No cierres la ventana hasta que desaparezca sola{ '\n\n' }⚠️ Es importante que llegues a Teams, no solo al login.</DialogDescription>
+          </DialogHeader>
+          <Button variant="outline" onClick={handleConfirmarManual} className="mt-4">
+            ✅ Ya terminé de iniciar sesión
+          </Button>        </DialogContent>
+      </Dialog>
     </TooltipProvider>
   )
 }

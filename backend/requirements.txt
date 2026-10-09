@@ -11,3 +11,6 @@ python-multipart
 pydantic
 pydantic-settings
 rapidfuzz
+playwright>=1.48.0
+
+tzdata>=2024.1

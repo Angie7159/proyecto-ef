@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routers import acuerdos, analisis, comites, documentos, reuniones, transcripcion
+from app.routers import acuerdos, analisis, bot, comites, cuentas, documentos, reuniones, transcripcion
 from app.supabase_client import get_supabase
 
 settings = get_settings()
@@ -41,6 +41,8 @@ app.include_router(acuerdos.router, prefix="/api")
 app.include_router(transcripcion.router, prefix="/api")
 app.include_router(analisis.router, prefix="/api")
 app.include_router(documentos.router, prefix="/api")
+app.include_router(bot.router, prefix="/api")
+app.include_router(cuentas.router, prefix="/api")
 
 
 @app.get("/")

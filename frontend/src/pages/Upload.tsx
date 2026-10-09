@@ -3,14 +3,16 @@ import { useQuery } from '@tanstack/react-query'
 import { format } from 'date-fns'
 import { useNavigate, Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { FileAudio, FileVideo, LoaderCircle, UploadCloud, X } from 'lucide-react'
+import { Bot, FileAudio, FileVideo, Link as LinkIcon, LoaderCircle, UploadCloud, X } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { supabase } from '@/lib/supabase'
 import { getApiErrorMessage, procesarReunionCompleta } from '@/lib/api'
+import { agregarReunionPorLink, obtenerEstadoCuentaMicrosoft } from '@/lib/bot'
 import type { Comite, FuenteReunion } from '@/types'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
@@ -42,6 +44,11 @@ function Upload() {
   const [isUploading, setIsUploading] = useState(false)
   const [processingStage, setProcessingStage] = useState('')
   const [isDragging, setIsDragging] = useState(false)
+  const [meetingUrl, setMeetingUrl] = useState('')
+  const [botTitle, setBotTitle] = useState('')
+  const [botCommitteeId, setBotCommitteeId] = useState('none')
+  const [botDuration, setBotDuration] = useState(30)
+  const [isSendingBot, setIsSendingBot] = useState(false)
 
   const { data: committees = [], isLoading: committeesLoading, isError: committeesError } = useQuery({
     queryKey: ['comites', 'upload'],
@@ -51,6 +58,12 @@ function Upload() {
       return (data ?? []) as Pick<Comite, 'id' | 'nombre'>[]
     },
   })
+  const microsoftAccountQuery = useQuery({
+    queryKey: ['cuenta-microsoft'],
+    queryFn: obtenerEstadoCuentaMicrosoft,
+    retry: 1,
+  })
+  const microsoftConnected = microsoftAccountQuery.data?.conectada === true
 
   function validateFile(candidate: File | null) {
     if (!candidate) return 'Selecciona un archivo de audio o video.'
@@ -201,6 +214,46 @@ function Upload() {
     }
   }
 
+  const isTeamsLink = meetingUrl.startsWith('https://teams.microsoft.com/')
+
+  async function handleBotSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!microsoftConnected) {
+      toast.error('Primero conecta tu cuenta Microsoft en Configuración.')
+      return
+    }
+    if (!isTeamsLink) {
+      toast.error('Pega un link válido de Microsoft Teams.')
+      return
+    }
+    if (!botTitle.trim()) {
+      toast.error('Escribe el título de la reunión.')
+      return
+    }
+    if (!Number.isInteger(botDuration) || botDuration < 1 || botDuration > 120) {
+      toast.error('La duración debe ser un número entre 1 y 120 minutos.')
+      return
+    }
+
+    setIsSendingBot(true)
+    try {
+      const meeting = await agregarReunionPorLink({
+        meeting_url: meetingUrl.trim(),
+        titulo: botTitle.trim(),
+        comite_id: botCommitteeId === 'none' ? null : botCommitteeId,
+        duracion_min: botDuration,
+      })
+      const reunionId = meeting.reunion_id ?? meeting.id
+      if (!reunionId) throw new Error('El backend no devolvió el identificador de la reunión.')
+      toast.success('Bot enviado a la reunión')
+      navigate(`/reuniones/${reunionId}`)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error))
+    } finally {
+      setIsSendingBot(false)
+    }
+  }
+
   const FileIcon = file?.type.startsWith('video/') ? FileVideo : FileAudio
 
   return (
@@ -212,7 +265,13 @@ function Upload() {
       </nav>
       <PageHeader title="Subir nueva reunión" />
 
-      <Card className="mx-auto w-full max-w-2xl">
+      <Tabs defaultValue="audio" className="mx-auto w-full max-w-2xl space-y-4">
+        <TabsList className="grid h-auto w-full grid-cols-2">
+          <TabsTrigger value="audio">Subir audio</TabsTrigger>
+          <TabsTrigger value="link">Agregar por link</TabsTrigger>
+        </TabsList>
+        <TabsContent value="audio">
+      <Card>
         <CardHeader>
           <CardTitle>Información de la reunión</CardTitle>
           <CardDescription>Sube la grabación para preparar su procesamiento y seguimiento.</CardDescription>
@@ -325,6 +384,75 @@ function Upload() {
           </form>
         </CardContent>
       </Card>
+        </TabsContent>
+        <TabsContent value="link">
+          {!microsoftConnected && (
+            <div role="status" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+              <span>⚠️ Primero conecta tu cuenta Microsoft en Configuración{microsoftAccountQuery.isPending ? ' (verificando...)' : ''}</span>
+              <Button type="button" variant="outline" size="sm" onClick={() => navigate('/configuracion')}>
+                Configurar cuenta
+              </Button>
+            </div>
+          )}
+          <Card>
+            <CardHeader>
+              <CardTitle>Agregar reunión de Teams</CardTitle>
+              <CardDescription>Pega el enlace de la reunión y MeetIA enviará el bot para capturar los subtítulos.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleBotSubmit} className="space-y-5">
+                <div className="space-y-2">
+                  <label htmlFor="teams-meeting-link" className="text-sm font-medium text-slate-800">Link de la reunión</label>
+                  <div className="relative">
+                    <LinkIcon className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      id="teams-meeting-link"
+                      type="url"
+                      value={meetingUrl}
+                      onChange={(event) => setMeetingUrl(event.target.value)}
+                      placeholder="Pega el link de la reunión de Teams"
+                      className="h-14 pl-12 text-base"
+                      aria-invalid={!isTeamsLink}
+                    />
+                  </div>
+                  <div className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${isTeamsLink ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                    {isTeamsLink ? '✅ Link de Teams detectado' : '❌ Link inválido'}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label htmlFor="bot-meeting-title" className="text-sm font-medium text-slate-800">Título de la reunión <span className="text-red-600">*</span></label>
+                  <Input id="bot-meeting-title" value={botTitle} onChange={(event) => setBotTitle(event.target.value)} placeholder="Ej. Reunión semanal del comité" required maxLength={300} />
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-800">Comité</label>
+                    <Select value={botCommitteeId} onValueChange={setBotCommitteeId} disabled={committeesLoading || committeesError}>
+                      <SelectTrigger aria-label="Comité de la reunión"><SelectValue placeholder="Selecciona un comité" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Sin comité</SelectItem>
+                        {committees.map((committee) => <SelectItem key={committee.id} value={committee.id}>{committee.nombre}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    {committeesError && <p className="text-xs text-red-600">No se pudieron cargar los comités.</p>}
+                  </div>
+                  <div className="space-y-2">
+                    <label htmlFor="bot-duration" className="text-sm font-medium text-slate-800">Duración estimada (min)</label>
+                    <Input id="bot-duration" type="number" min={1} max={120} step={1} value={botDuration} onChange={(event) => setBotDuration(Number(event.target.value))} required />
+                  </div>
+                </div>
+
+                <Button type="submit" size="lg" className="w-full" disabled={isSendingBot || !microsoftConnected || microsoftAccountQuery.isPending || committeesLoading || committeesError || !isTeamsLink || !botTitle.trim()}>
+                  {isSendingBot
+                    ? <><LoaderCircle className="h-5 w-5 animate-spin" /> Enviando bot...</>
+                    : <><Bot className="h-5 w-5" /> Enviar bot a la reunión</>}
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

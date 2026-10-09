@@ -22,3 +22,6 @@ Thumbs.db
 
 # Archivos de logs
 *.log
+backend/bot_profile_teams/
+backend/bot_sessions/
+backend/bot_logs/

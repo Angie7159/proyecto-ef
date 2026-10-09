@@ -9,7 +9,7 @@ EstadoReunion = Literal[
     "procesada",
     "error",
 ]
-FuenteReunion = Literal["teams_auto", "teams_manual", "zoom", "presencial", "upload"]
+FuenteReunion = Literal["teams_auto", "teams_manual", "bot_auto", "zoom", "presencial", "upload"]
 
 
 class ReunionBase(BaseModel):
@@ -66,6 +66,8 @@ class ReunionListItem(BaseModel):
     participantes: int
     fuente: FuenteReunion
     estado: EstadoReunion
+    progreso: str | None = None
+    error_mensaje: str | None = None
     comite_id: str | None = None
     comite_nombre: str | None = None
     comite_color: str | None = None

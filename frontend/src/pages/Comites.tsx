@@ -2,7 +2,6 @@ import { useMemo, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { differenceInCalendarDays, parseISO } from 'date-fns'
-import { es } from 'date-fns/locale'
 import {
   Building2,
   Ellipsis,
